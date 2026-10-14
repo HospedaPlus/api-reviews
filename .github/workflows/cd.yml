@@ -1,0 +1,110 @@
+name: CD
+
+# Deploys only what CI already validated on main (or on demand).
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deployments at the same time; never cancel one in progress
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC -> AWS IAM role (no long-lived AWS keys)
+
+env:
+  CONTAINER_NAME: api
+
+jobs:
+  aws-not-configured:
+    name: AWS not configured yet
+    if: vars.AWS_ROLE_ARN == ''
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::notice::Deployment skipped: set the AWS repository variables listed in README.md (CI/CD section) to enable it."
+
+  deploy:
+    name: Build, push to ECR and deploy to ECS
+    if: >-
+      vars.AWS_ROLE_ARN != '' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+    env:
+      # Deploy exactly the commit CI tested
+      IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+      ECS_EXECUTION_ROLE_ARN: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
+      ECS_TASK_ROLE_ARN: ${{ vars.ECS_TASK_ROLE_ARN }}
+      DATABASE_URL_SECRET_ARN: ${{ vars.DATABASE_URL_SECRET_ARN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.IMAGE_TAG }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Fill task definition variables
+        run: |
+          envsubst < deploy/ecs/task-definition.json > task-definition.rendered.json
+          if grep -q '\${' task-definition.rendered.json; then
+            echo "::error::Unresolved variables in the task definition"; exit 1
+          fi
+
+      - name: Set image in task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.rendered.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          wait-for-service-stability: true
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "### Deployed :rocket:"
+            echo "- Image: \`${ECR_REPOSITORY}:${IMAGE_TAG}\`"
+            echo "- Service: \`${ECS_CLUSTER}/${ECS_SERVICE}\` (${AWS_REGION})"
+          } >> "$GITHUB_STEP_SUMMARY"

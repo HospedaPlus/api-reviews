@@ -1,0 +1,40 @@
+[project]
+name = "api-reviews"
+version = "0.1.0"
+description = "HospedaPlus F5 - Simulated guest reviews REST API (paginated) with reproducible seed."
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.0",
+    "fastapi[standard]>=0.143.1",
+    "psycopg[binary]>=3.3.6",
+    "pydantic-settings>=2.16.0",
+    "sqlmodel>=0.0.48",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "C4"]
+ignore = ["B008"] # FastAPI's Depends()/Query() in defaults is the intended pattern
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/seed/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

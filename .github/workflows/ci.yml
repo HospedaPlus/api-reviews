@@ -1,0 +1,212 @@
+name: CI
+
+on:
+  pull_request: # every PR, including stacked PRs that target another branch
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+# A new push to the same branch/PR cancels the previous run
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.11.32"
+  GITLEAKS_VERSION: "8.30.1"
+  POSTGRES_URL: postgresql://postgres:postgres@localhost:5432
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # scan the whole history, not only the last commit
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan git history for secrets
+        # Fails the pipeline (exit code 1) when any credential is detected
+        run: gitleaks git --redact --verbose --exit-code 1 .
+
+  test:
+    name: Tests (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: reviews
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/reviews
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/reviews_test
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Create test database
+        run: psql "$POSTGRES_URL/reviews" -c "CREATE DATABASE reviews_test"
+
+      - name: Migrations (upgrade, downgrade, upgrade)
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
+      - name: Models and migrations are in sync
+        run: uv run alembic check
+
+      - name: Unit and integration tests
+        run: |
+          uv run pytest --cov --cov-report=term --cov-report=xml \
+            --cov-fail-under=90 --junitxml=pytest-report.xml
+
+      - name: Seed is idempotent and reproducible
+        run: |
+          count() { psql "$DATABASE_URL" -tAc "SELECT count(*) FROM reviews"; }
+          digest() { psql "$DATABASE_URL" -tAc "SELECT md5(string_agg(platform || external_id || rating || text, ',' ORDER BY platform, external_id)) FROM reviews"; }
+
+          uv run python -m src.seed --mode dev
+          first_count=$(count); first_digest=$(digest)
+
+          uv run python -m src.seed --mode dev
+          [ "$(count)" = "$first_count" ] || { echo "::error::Second seed run inserted rows"; exit 1; }
+
+          psql "$DATABASE_URL" -c "TRUNCATE reviews"
+          uv run python -m src.seed --mode dev
+          [ "$(digest)" = "$first_digest" ] || { echo "::error::Seed is not reproducible"; exit 1; }
+
+          echo "### Seed check :white_check_mark:" >> "$GITHUB_STEP_SUMMARY"
+          echo "Rows: $first_count — rerun inserted 0 rows, re-seed produced the same digest \`$first_digest\`." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports
+          path: |
+            coverage.xml
+            pytest-report.xml
+          retention-days: 14
+
+  docker:
+    name: Docker build and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: reviews
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: api-reviews:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Report image size
+        run: |
+          size=$(docker image inspect api-reviews:ci --format '{{.Size}}' | numfmt --to=iec)
+          echo "### Docker image" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`api-reviews:ci\` size: **$size**" >> "$GITHUB_STEP_SUMMARY"
+          docker history api-reviews:ci --format 'table {{.Size}}\t{{.CreatedBy}}' | head -15
+
+      - name: Smoke test (migrations + API + seed inside the image)
+        run: |
+          docker run -d --name api --network host \
+            -e DATABASE_URL="$POSTGRES_URL/reviews" api-reviews:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8000/health/ready && break
+            sleep 2
+          done
+          docker run --rm --network host -e RUN_MIGRATIONS=false \
+            -e DATABASE_URL="$POSTGRES_URL/reviews" api-reviews:ci \
+            python -m src.seed --date 2026-09-30
+          curl -fsS "http://localhost:8000/api/v1/reviews?page_size=1" | python3 -m json.tool
+          [ "$(docker inspect -f '{{.Config.User}}' api-reviews:ci)" = "app" ] \
+            || { echo "::error::Image must run as a non-root user"; exit 1; }
+
+      - name: Container logs
+        if: always()
+        run: docker logs api || true
+
+  ci-passed:
+    # Single required status check for branch protection on main
+    name: CI passed
+    if: always()
+    needs: [lint, secrets, test, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All jobs succeeded
+        run: |
+          echo '${{ toJSON(needs) }}' | python3 -c '
+          import json, sys
+          failed = {k: v["result"] for k, v in json.load(sys.stdin).items() if v["result"] != "success"}
+          if failed:
+              sys.exit(f"Failed jobs: {failed}")
+          print("All CI jobs passed")
+          '

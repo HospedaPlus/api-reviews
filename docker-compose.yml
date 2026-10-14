@@ -1,0 +1,59 @@
+# Local environment: `docker compose up --build`
+# Starts Postgres, applies migrations, launches the API and runs the seed once.
+name: hospedaplus-reviews
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-reviews}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432" # 5433 on the host to avoid clashing with other projects
+    volumes:
+      - reviews_pg_data:/var/lib/postgresql/data
+    networks: [reviews_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    image: hospedaplus/api-reviews:local
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      # "db" is the service name: inside the Docker network it works as a hostname
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-reviews}
+      ENVIRONMENT: local
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [reviews_net]
+
+  seed:
+    build: . # same Dockerfile as the api; every layer comes from the build cache
+    restart: "no"
+    command: ["python", "-m", "src.seed"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-reviews}
+      RUN_MIGRATIONS: "false" # the api service already migrated the schema
+      SEED_MODE: ${SEED_MODE:-dev}
+      SEED_VALUE: ${SEED_VALUE:-42}
+      SEED_DUPLICATE_RATE: ${SEED_DUPLICATE_RATE:-0.05}
+    depends_on:
+      api:
+        condition: service_healthy # api healthy => migrations applied
+    networks: [reviews_net]
+
+volumes:
+  reviews_pg_data:
+
+networks:
+  reviews_net:
