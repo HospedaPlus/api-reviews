@@ -1,0 +1,58 @@
+{
+  "family": "api-reviews",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "runtimePlatform": {
+    "operatingSystemFamily": "LINUX",
+    "cpuArchitecture": "X86_64"
+  },
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "${ECS_EXECUTION_ROLE_ARN}",
+  "taskRoleArn": "${ECS_TASK_ROLE_ARN}",
+  "containerDefinitions": [
+    {
+      "name": "api",
+      "image": "replaced-by-the-cd-pipeline",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 8000, "protocol": "tcp", "name": "http" }
+      ],
+      "environment": [
+        { "name": "ENVIRONMENT", "value": "production" },
+        { "name": "LOG_LEVEL", "value": "INFO" },
+        { "name": "RUN_MIGRATIONS", "value": "true" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL", "valueFrom": "${DATABASE_URL_SECRET_ARN}" }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""
+        ],
+        "interval": 15,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 30
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/hospedaplus/api-reviews",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "api",
+          "awslogs-create-group": "true"
+        }
+      },
+      "readonlyRootFilesystem": false,
+      "stopTimeout": 20
+    }
+  ],
+  "tags": [
+    { "key": "project", "value": "hospedaplus-revenue" },
+    { "key": "environment", "value": "production" },
+    { "key": "component", "value": "api-reviews" },
+    { "key": "owner", "value": "hospedaplus-revenue-team" }
+  ]
+}
