@@ -41,6 +41,10 @@
         {
           "name": "SEED_LIVE_CATCHUP_DAYS",
           "value": "3"
+        },
+        {
+          "name": "SEED_LIVE_START_DATE",
+          "value": "2026-11-02"
         }
       ],
       "secrets": [

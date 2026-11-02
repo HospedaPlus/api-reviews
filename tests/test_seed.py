@@ -185,3 +185,9 @@ def test_live_passes_are_idempotent(engine: Engine) -> None:
     again = run_seed(engine, live_config(args, morning + timedelta(hours=6)))
     assert first.inserted > 0 and later.inserted > 0
     assert again.inserted == 0
+
+
+def test_live_start_date_skips_earlier_days() -> None:
+    args = parse_args(["--live", "--live-start-date", "2026-09-02"])
+    config = live_config(args, datetime(2026, 9, 2, 9, tzinfo=UTC))
+    assert config.start_date == config.end_date == date(2026, 9, 2)

@@ -91,6 +91,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=int(os.getenv("SEED_LIVE_CATCHUP_DAYS", "3")),
         help="Live mode also completes the previous N days (e.g. after the container was down)",
     )
+    parser.add_argument(
+        "--live-start-date",
+        type=parse_day,
+        default=parse_day(os.environ["SEED_LIVE_START_DATE"])
+        if os.getenv("SEED_LIVE_START_DATE")
+        else None,
+        help="Live mode never generates days before this one (e.g. 'start publishing today')",
+    )
     return parser.parse_args(argv)
 
 
@@ -122,7 +130,10 @@ def live_config(args: argparse.Namespace, now: datetime) -> SeedConfig:
     mode = MODES[args.mode]
     return SeedConfig(
         seed=args.seed,
-        start_date=now.date() - timedelta(days=args.live_catchup_days),
+        start_date=max(
+            now.date() - timedelta(days=args.live_catchup_days),
+            args.live_start_date or date.min,
+        ),
         end_date=now.date(),
         reviews_per_day=int(args.reviews_per_day or mode["reviews_per_day"]),
         duplicate_rate=args.duplicate_rate,

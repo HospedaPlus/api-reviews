@@ -159,6 +159,7 @@ python -m src.seed --help
 | `--live` | — | — | Simulator: loop that inserts the reviews whose `published_at` already passed |
 | `--live-interval-minutes` | `SEED_LIVE_INTERVAL_MINUTES` | `15` | Time between passes |
 | `--live-catchup-days` | `SEED_LIVE_CATCHUP_DAYS` | `3` | Also completes the previous days (after downtime) |
+| `--live-start-date` | `SEED_LIVE_START_DATE` | — | No reviews before this day (start the source "from today" without history) |
 
 How it meets the brief (§5.2):
 

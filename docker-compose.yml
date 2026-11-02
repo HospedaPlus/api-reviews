@@ -67,6 +67,7 @@ services:
       SEED_DUPLICATE_RATE: ${SEED_DUPLICATE_RATE:-0.05}
       SEED_LIVE_INTERVAL_MINUTES: ${SEED_LIVE_INTERVAL_MINUTES:-15}
       SEED_LIVE_CATCHUP_DAYS: ${SEED_LIVE_CATCHUP_DAYS:-3}
+      SEED_LIVE_START_DATE: ${SEED_LIVE_START_DATE:-} # e.g. 2026-11-02: no reviews before that day
     depends_on:
       api:
         condition: service_healthy
