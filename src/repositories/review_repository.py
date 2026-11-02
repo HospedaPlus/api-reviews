@@ -69,4 +69,7 @@ class ReviewRepository:
             # Inclusive end date: everything before the next day at 00:00 UTC.
             end = datetime.combine(filters.published_to + timedelta(days=1), time.min, tzinfo=UTC)
             statement = statement.where(Review.published_at < end)
+        if filters.updated_from:
+            # Incremental extraction: everything created or edited since the last run.
+            statement = statement.where(Review.updated_at >= filters.updated_from)
         return statement

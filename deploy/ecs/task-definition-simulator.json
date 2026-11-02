@@ -1,0 +1,93 @@
+{
+  "family": "api-reviews-simulator",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "runtimePlatform": {
+    "operatingSystemFamily": "LINUX",
+    "cpuArchitecture": "X86_64"
+  },
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "${ECS_EXECUTION_ROLE_ARN}",
+  "taskRoleArn": "${ECS_TASK_ROLE_ARN}",
+  "containerDefinitions": [
+    {
+      "name": "simulator",
+      "image": "replaced-by-the-cd-pipeline",
+      "essential": true,
+      "environment": [
+        {
+          "name": "ENVIRONMENT",
+          "value": "production"
+        },
+        {
+          "name": "LOG_LEVEL",
+          "value": "INFO"
+        },
+        {
+          "name": "RUN_MIGRATIONS",
+          "value": "false"
+        },
+        {
+          "name": "SEED_MODE",
+          "value": "full"
+        },
+        {
+          "name": "SEED_LIVE_INTERVAL_MINUTES",
+          "value": "15"
+        },
+        {
+          "name": "SEED_LIVE_CATCHUP_DAYS",
+          "value": "3"
+        },
+        {
+          "name": "SEED_LIVE_START_DATE",
+          "value": "2026-11-02"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "DATABASE_URL",
+          "valueFrom": "${DATABASE_URL_SECRET_ARN}"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/hospedaplus/api-reviews",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "simulator",
+          "awslogs-create-group": "true"
+        }
+      },
+      "readonlyRootFilesystem": false,
+      "stopTimeout": 20,
+      "command": [
+        "python",
+        "-m",
+        "src.seed",
+        "--live"
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "key": "project",
+      "value": "hospedaplus-revenue"
+    },
+    {
+      "key": "environment",
+      "value": "production"
+    },
+    {
+      "key": "component",
+      "value": "api-reviews-simulator"
+    },
+    {
+      "key": "owner",
+      "value": "hospedaplus-revenue-team"
+    }
+  ]
+}

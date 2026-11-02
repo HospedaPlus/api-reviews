@@ -259,3 +259,12 @@ def test_concurrent_insert_race_is_reported_as_409(client, review_payload, monke
     monkeypatch.setattr(ReviewRepository, "get_by_external_id", lambda *_: None)
     response = client.post(BASE, json=review_payload)
     assert response.status_code == 409
+
+
+def test_updated_from_returns_edited_reviews(client: TestClient, review_payload: dict) -> None:
+    old = create(client, review_payload)
+    create(client, review_payload, external_id="BK-other")
+    mark = datetime.now(UTC)
+    client.patch(f"{BASE}/{old['id']}", json={"rating": 1})
+    body = client.get(BASE, params={"updated_from": mark.isoformat()}).json()
+    assert [item["id"] for item in body["items"]] == [old["id"]]

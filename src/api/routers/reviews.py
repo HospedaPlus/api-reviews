@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Query, Response, status
@@ -45,6 +45,13 @@ def list_reviews(
     max_rating: Annotated[int | None, Query(ge=1, le=5)] = None,
     published_from: Annotated[date | None, Query(description="Inclusive, UTC")] = None,
     published_to: Annotated[date | None, Query(description="Inclusive, UTC")] = None,
+    updated_from: Annotated[
+        datetime | None,
+        Query(
+            description="Only reviews created or edited at or after this instant (ISO 8601). "
+            "Lets an incremental extraction also pick up PATCHed reviews."
+        ),
+    ] = None,
     order: SortOrder = SortOrder.ASC,
 ) -> ReviewPage:
     filters = ReviewFilters(
@@ -55,6 +62,11 @@ def list_reviews(
         max_rating=max_rating,
         published_from=published_from,
         published_to=published_to,
+        updated_from=(
+            updated_from.replace(tzinfo=UTC)
+            if updated_from and updated_from.tzinfo is None
+            else updated_from
+        ),
     )
     return service.list_reviews(filters, page=page, page_size=page_size, order=order)
 

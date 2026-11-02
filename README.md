@@ -29,7 +29,9 @@ This will:
 
 1. Start PostgreSQL 16 with a persistent volume and wait for its health check.
 2. Build the API image, apply the Alembic migrations and start FastAPI on port **8000**.
-3. Run the **seed** once (dev mode: 30 days × ~20 reviews/day) when the API is healthy.
+3. Run the **seed** once (dev mode: 30 days × ~20 reviews/day, up to now) when the API is healthy.
+4. Start the **simulator**, which keeps adding the reviews published since its last pass
+   (every 15 min, ~300/day), so a daily extraction of "yesterday" always finds data.
 
 Then open <http://localhost:8000/docs>.
 
@@ -39,7 +41,8 @@ other local projects.
 
 ```bash
 docker compose logs -f api                       # API logs
-docker compose run --rm seed python -m src.seed --mode full   # ~115k reviews (~1 year)
+docker compose run --rm seed python -m src.seed --mode full --end-date today   # ~115k reviews, last year up to now
+docker compose logs -f simulator                 # live reviews being published
 docker compose down                              # stop (keeps data)
 docker compose down -v                           # stop and delete the database
 docker compose exec db psql -U postgres -d reviews
@@ -118,6 +121,10 @@ Base path: `/api/v1`. All timestamps are **UTC** (ISO 8601).
 **Daily ingestion pattern:** call with `published_from` = `published_to` = the day to load and
 follow the pages while `has_next` is `true`.
 
+**Incremental pattern (also catches edits):** `updated_from=<last successful run, ISO 8601>`
+returns every review created or `PATCH`ed since then. Deletes are not visible to an extractor;
+the source treats them as rare corrections.
+
 Errors raised by business rules share one shape:
 
 ```json
@@ -143,11 +150,16 @@ python -m src.seed --help
 | `--mode dev\|full` | `SEED_MODE` | `dev` | dev: 30 days × 20/day · full: 365 days × 300/day |
 | `--seed` | `SEED_VALUE` | `42` | Fixed seed → reproducible data |
 | `--end-date` | `SEED_END_DATE` | `2026-09-30` | Last day generated (fixed so reruns match) |
+| `--end-date` accepts `today` | `SEED_END_DATE=today` | | Last 365/30 days **up to now**: today only gets the reviews already published |
 | `--start-date` | `SEED_START_DATE` | end − mode days | |
 | `--date` | — | — | Generate a **single day** (daily batch) |
 | `--reviews-per-day` | `SEED_REVIEWS_PER_DAY` | per mode | ±15 % daily variation |
 | `--duplicate-rate` | `SEED_DUPLICATE_RATE` | `0.05` | Share of reviews also posted on another platform |
 | `--dry-run` | — | — | Generate without writing |
+| `--live` | — | — | Simulator: loop that inserts the reviews whose `published_at` already passed |
+| `--live-interval-minutes` | `SEED_LIVE_INTERVAL_MINUTES` | `15` | Time between passes |
+| `--live-catchup-days` | `SEED_LIVE_CATCHUP_DAYS` | `3` | Also completes the previous days (after downtime) |
+| `--live-start-date` | `SEED_LIVE_START_DATE` | — | No reviews before this day (start the source "from today" without history) |
 
 How it meets the brief (§5.2):
 
@@ -227,7 +239,7 @@ these repository **variables** exist:
 
 | Variable | Example |
 |---|---|
-| `AWS_REGION` | `us-east-1` |
+| `AWS_REGION` | `us-east-2` |
 | `AWS_ROLE_ARN` | `arn:aws:iam::<account>:role/hospedaplus-github-deploy` |
 | `ECR_REPOSITORY` | `hospedaplus/api-reviews` |
 | `ECS_CLUSTER` | `hospedaplus-prod` |
@@ -244,6 +256,21 @@ aws ecs run-task --cluster hospedaplus-prod --launch-type FARGATE \
   --network-configuration "awsvpcConfiguration={subnets=[<private-subnet>],securityGroups=[<sg>]}" \
   --overrides '{"containerOverrides":[{"name":"api","command":["python","-m","src.seed","--mode","full"],
                  "environment":[{"name":"RUN_MIGRATIONS","value":"false"}]}]}'
+```
+
+Initial load up to today (run once, before the simulator): same command with
+`"command":["python","-m","src.seed","--mode","full","--end-date","today"]`.
+
+Keep the source alive with the **simulator** as a second ECS service (one task, no load balancer),
+using `deploy/ecs/task-definition-simulator.json` (same image, same `DATABASE_URL` secret):
+
+```bash
+envsubst < deploy/ecs/task-definition-simulator.json > simulator.json   # same variables as the CD job
+aws ecs register-task-definition --cli-input-json file://simulator.json
+# put the image URI of the current api deployment in "image" before registering
+aws ecs create-service --cluster hospedaplus-prod --service-name api-reviews-simulator \
+  --task-definition api-reviews-simulator --desired-count 1 --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[<private-subnet>],securityGroups=[<sg>]}"
 ```
 
 Rollback: redeploy a previous task definition revision (`aws ecs update-service

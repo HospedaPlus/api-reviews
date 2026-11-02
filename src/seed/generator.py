@@ -46,6 +46,8 @@ class SeedConfig:
     end_date: date
     reviews_per_day: int
     duplicate_rate: float = 0.05
+    # Only reviews published at or before this instant are returned (live mode: "now").
+    cutoff: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.start_date > self.end_date:
@@ -172,6 +174,8 @@ def generate_day(config: SeedConfig, day: date) -> list[dict]:
                     "updated_at": dup_published,
                 }
             )
+    if config.cutoff is not None:
+        rows = [row for row in rows if row["published_at"] <= config.cutoff]
     return rows
 
 

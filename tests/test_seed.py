@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -6,7 +6,7 @@ from sqlalchemy.engine import Engine
 
 from src.core.catalog import get_hotel_ids
 from src.models.review_model import Review
-from src.seed.__main__ import build_config, parse_args
+from src.seed.__main__ import build_config, live_config, parse_args
 from src.seed.generator import SeedConfig, generate_day
 from src.seed.runner import run_seed
 
@@ -157,3 +157,37 @@ def test_cli_builds_expected_config(argv: list[str], expected: tuple) -> None:
 def test_invalid_seed_config_is_rejected(kwargs: dict) -> None:
     with pytest.raises(ValueError):
         SeedConfig(**{**CONFIG.__dict__, **kwargs})
+
+
+def test_cutoff_only_returns_reviews_already_published() -> None:
+    day = date(2026, 9, 2)
+    noon = datetime(2026, 9, 2, 12, tzinfo=UTC)
+    full = generate_day(CONFIG, day)
+    partial = generate_day(SeedConfig(**{**CONFIG.__dict__, "cutoff": noon}), day)
+    assert 0 < len(partial) < len(full)
+    assert all(row["published_at"] <= noon for row in partial)
+    # the reviews revealed so far are exactly the same rows the full day has
+    assert partial == [row for row in full if row["published_at"] <= noon]
+
+
+def test_end_date_today_stops_at_now() -> None:
+    config = build_config(parse_args(["--end-date", "today"]))
+    assert config.end_date == datetime.now(UTC).date()
+    assert config.cutoff is not None
+    assert build_config(parse_args([])).cutoff is None  # past days stay complete
+
+
+def test_live_passes_are_idempotent(engine: Engine) -> None:
+    args = parse_args(["--live", "--live-catchup-days", "1"])
+    morning = datetime(2026, 9, 2, 9, tzinfo=UTC)
+    first = run_seed(engine, live_config(args, morning))
+    later = run_seed(engine, live_config(args, morning + timedelta(hours=6)))
+    again = run_seed(engine, live_config(args, morning + timedelta(hours=6)))
+    assert first.inserted > 0 and later.inserted > 0
+    assert again.inserted == 0
+
+
+def test_live_start_date_skips_earlier_days() -> None:
+    args = parse_args(["--live", "--live-start-date", "2026-09-02"])
+    config = live_config(args, datetime(2026, 9, 2, 9, tzinfo=UTC))
+    assert config.start_date == config.end_date == date(2026, 9, 2)
