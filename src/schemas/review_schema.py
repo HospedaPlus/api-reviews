@@ -93,6 +93,7 @@ class ReviewFilters(BaseModel):
     max_rating: int | None = None
     published_from: date | None = None
     published_to: date | None = None
+    updated_from: datetime | None = None
 
 
 class Page(BaseModel):

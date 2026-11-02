@@ -47,9 +47,29 @@ services:
       SEED_MODE: ${SEED_MODE:-dev}
       SEED_VALUE: ${SEED_VALUE:-42}
       SEED_DUPLICATE_RATE: ${SEED_DUPLICATE_RATE:-0.05}
+      SEED_END_DATE: ${SEED_END_DATE:-today} # history up to now, so the simulator continues it
     depends_on:
       api:
         condition: service_healthy # api healthy => migrations applied
+    networks: [reviews_net]
+
+  # Keeps the source alive: every 15 min inserts the reviews "published" since the last pass
+  # (~300/day in full mode). Same deterministic data as the seed, so they never disagree.
+  simulator:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "src.seed", "--live"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-reviews}
+      RUN_MIGRATIONS: "false"
+      SEED_MODE: ${SIMULATOR_MODE:-full}
+      SEED_VALUE: ${SEED_VALUE:-42}
+      SEED_DUPLICATE_RATE: ${SEED_DUPLICATE_RATE:-0.05}
+      SEED_LIVE_INTERVAL_MINUTES: ${SEED_LIVE_INTERVAL_MINUTES:-15}
+      SEED_LIVE_CATCHUP_DAYS: ${SEED_LIVE_CATCHUP_DAYS:-3}
+    depends_on:
+      api:
+        condition: service_healthy
     networks: [reviews_net]
 
 volumes:
